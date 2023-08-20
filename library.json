@@ -5,7 +5,7 @@
   "keywords": "esp-now, gateway, node, home",
   "platforms": ["espressif32", "espressif8266"],
   "description": "QuickEspNow is a library for ESP8266/ESP32 that allows you to send data over the ESP-NOW protocol.",
-  "url": "https://github.com/gmag11/QuickEspNow.git",
+  "url": "https://github.com/blazoncek/QuickEspNow.git",
   "authors":
     {
       "name": "Germán Martín",
@@ -14,7 +14,7 @@
   "repository":
     {
       "type": "git",
-      "url": "https://github.com/gmag11/QuickEspNow.git"
+      "url": "https://github.com/blazoncek/QuickEspNow.git"
     },
   "examples": "examples/*/*.ino",
   "license": "GPL-3.0-or-later",
@@ -29,7 +29,6 @@
     },
     "dependencies": 
     {
-        "gmag11/QuickDebug": "0.7.0"
     }
 }
 
