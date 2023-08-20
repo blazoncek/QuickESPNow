@@ -15,7 +15,9 @@
 #include "WProgram.h"
 #endif
 
+#ifdef _DEBUG_h
 static const char* RINGBUFFER_DEBUG_TAG = "RINGBUFFER";
+#endif
 
 /**
   * @brief Ring buffer class. Used to implement message buffer
