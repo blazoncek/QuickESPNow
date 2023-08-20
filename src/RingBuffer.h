@@ -14,7 +14,6 @@
 #else
 #include "WProgram.h"
 #endif
-#include "QuickDebug.h"
 
 static const char* RINGBUFFER_DEBUG_TAG = "RINGBUFFER";
 
