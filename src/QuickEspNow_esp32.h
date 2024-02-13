@@ -13,6 +13,18 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
+// Disable debug dependency if debug level is 0
+#if CORE_DEBUG_LEVEL > 0
+#include <QuickDebug.h>
+constexpr auto QESPNOW_TAG = "QESPNOW";
+#else // CORE_DEBUG_LEVEL
+#define DEBUG_ERROR(...)
+#define DEBUG_INFO(...)
+#define DEBUG_VERBOSE(...)
+#define DEBUG_WARN(...)
+#define DEBUG_DBG(...)
+#endif
+
 //#define MEAS_TPUT
 
 static uint8_t ESPNOW_BROADCAST_ADDRESS[] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
