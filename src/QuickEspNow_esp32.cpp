@@ -1,5 +1,4 @@
 #include "QuickEspNow.h"
-//#include "QuickDebug.h"
 
 #ifdef ESP32
 
@@ -8,9 +7,10 @@ QuickEspNow quickEspNow;
 constexpr auto PEERLIST_TAG = "PEERLIST";
 
 
-bool QuickEspNow::begin (uint8_t channel, uint32_t wifi_interface) {
+bool QuickEspNow::begin (uint8_t channel, uint32_t wifi_interface, bool synchronousSend) {
 
     wifi_second_chan_t ch2 = WIFI_SECOND_CHAN_NONE;
+    this->synchronousSend = synchronousSend;
 
     DEBUG_DBG (QESPNOW_TAG, "Channel: %d, Interface: %d", channel, wifi_interface);
     // Set the wifi interface
@@ -57,7 +57,10 @@ void QuickEspNow::stop () {
     esp_now_unregister_recv_cb ();
     esp_now_unregister_send_cb ();
     esp_now_deinit ();
+}
 
+bool QuickEspNow::readyToSendData () {
+    return uxQueueMessagesWaiting (tx_queue) < queueSize;
 }
 
 bool QuickEspNow::setChannel (uint8_t channel, wifi_second_chan_t ch2) {
@@ -86,26 +89,27 @@ bool QuickEspNow::setChannel (uint8_t channel, wifi_second_chan_t ch2) {
     return true;
 }
 
-int32_t QuickEspNow::send (const uint8_t* dstAddress, const uint8_t* payload, size_t payload_len) {
+comms_send_error_t QuickEspNow::send (const uint8_t* dstAddress, const uint8_t* payload, size_t payload_len) {
     comms_tx_queue_item_t message;
 
     if (!dstAddress || !payload || !payload_len) {
         DEBUG_WARN (QESPNOW_TAG, "Parameters error");
-        return -1;
+        return COMMS_SEND_PAYLOAD_LENGTH_ERROR;
     }
 
     if (payload_len > ESP_NOW_MAX_DATA_LEN) {
         DEBUG_WARN (QESPNOW_TAG, "Length error. %d", payload_len);
-        return -1;
+        return COMMS_SEND_PAYLOAD_LENGTH_ERROR;
     }
 
-    if (uxQueueMessagesWaiting (tx_queue) >= ESPNOW_QUEUE_SIZE) {
-        comms_tx_queue_item_t tempBuffer;
-        xQueueReceive (tx_queue, &tempBuffer, 0);
+    if (uxQueueMessagesWaiting (tx_queue) >= queueSize) {
+        // comms_tx_queue_item_t tempBuffer;
+        // xQueueReceive (tx_queue, &tempBuffer, 0);
 #ifdef MEAS_TPUT
-        txDataDropped += tempBuffer.payload_len;
+        //txDataDropped += tempBuffer.payload_len;
 #endif // MEAS_TPUT
-        DEBUG_DBG (QESPNOW_TAG, "Message dropped");
+        //DEBUG_DBG (QESPNOW_TAG, "Message dropped");
+        return COMMS_SEND_QUEUE_FULL_ERROR;
     }
     memcpy (message.dstAddress, dstAddress, ESP_NOW_ETH_ALEN);
     message.payload_len = payload_len;
@@ -117,10 +121,20 @@ int32_t QuickEspNow::send (const uint8_t* dstAddress, const uint8_t* payload, si
 #endif // MEAS_TPUT
         DEBUG_DBG (QESPNOW_TAG, "--------- %d Comms messages queued. Len: %d", uxQueueMessagesWaiting (tx_queue), payload_len);
         DEBUG_VERBOSE (QESPNOW_TAG, "--------- Ready to send is %s", readyToSend ? "true" : "false");
-        return 0;
+        DEBUG_VERBOSE (QESPNOW_TAG, "--------- SyncronousSend is %s", synchronousSend ? "true" : "false");
+        if (synchronousSend) {
+            waitingForConfirmation = true;
+            DEBUG_INFO (QESPNOW_TAG, "--------- Waiting for send confirmation");
+            while (waitingForConfirmation) {
+                taskYIELD ();
+            }
+            DEBUG_INFO (QESPNOW_TAG, "--------- Confirmation is %s", sentStatus == ESP_NOW_SEND_SUCCESS ? "true" : "false");
+            return (sentStatus == ESP_NOW_SEND_SUCCESS) ? COMMS_SEND_OK : COMMS_SEND_CONFIRM_ERROR;
+        }
+        return COMMS_SEND_OK;
     } else {
         DEBUG_WARN (QESPNOW_TAG, "Error queuing Comms message to " MACSTR, MAC2STR (dstAddress));
-        return -1;
+        return COMMS_SEND_MSG_ENQUEUE_ERROR;
     }
 }
 
@@ -208,8 +222,8 @@ void QuickEspNow::espnowTxHandle () {
         comms_tx_queue_item_t message;
         while (xQueueReceive (tx_queue, &message, pdMS_TO_TICKS (1000))) {
             DEBUG_DBG (QESPNOW_TAG, "Comms message got from queue. %d left", uxQueueMessagesWaiting (tx_queue));
-            while (!readyToSend) {
-                delay (1);
+            while (!readyToSend && !synchronousSend) {
+                delay (0);
             }
             if (!sendEspNowMessage (&message)) {
                 DEBUG_DBG (QESPNOW_TAG, "Message to " MACSTR " sent. Len: %u", MAC2STR (message.dstAddress), message.payload_len);
@@ -228,15 +242,11 @@ void QuickEspNow::espnowTxHandle () {
 void QuickEspNow::enableTransmit (bool enable) {
     DEBUG_DBG (QESPNOW_TAG, "Send esp-now task %s", enable ? "enabled" : "disabled");
     if (enable) {
-        if (espnowTxTask_cb) {
-            vTaskResume (espnowTxTask);
-            vTaskResume (espnowRxTask);
-        }
+        vTaskResume (espnowTxTask);
+        vTaskResume (espnowRxTask);
     } else {
-        if (espnowTxTask_cb) {
-            vTaskSuspend (espnowTxTask);
-            vTaskSuspend (espnowRxTask);
-        }
+        vTaskSuspend (espnowTxTask);
+        vTaskSuspend (espnowRxTask);
     }
 }
 
@@ -299,10 +309,15 @@ void QuickEspNow::initComms () {
     esp_now_register_recv_cb (reinterpret_cast<esp_now_recv_cb_t>(rx_cb));
     esp_now_register_send_cb (reinterpret_cast<esp_now_send_cb_t>(tx_cb));
 
-    tx_queue = xQueueCreate (ESPNOW_QUEUE_SIZE, sizeof (comms_tx_queue_item_t));
+    int txQueueSize = queueSize;
+    if (synchronousSend) {
+        txQueueSize = 1;
+    }
+    
+    tx_queue = xQueueCreate (txQueueSize, sizeof (comms_tx_queue_item_t));
     xTaskCreateUniversal (espnowTxTask_cb, "espnow_loop", 8 * 1024, NULL, 1, &espnowTxTask, CONFIG_ARDUINO_RUNNING_CORE);
 
-    rx_queue = xQueueCreate (ESPNOW_QUEUE_SIZE, sizeof (comms_rx_queue_item_t));
+    rx_queue = xQueueCreate (queueSize, sizeof (comms_rx_queue_item_t));
     xTaskCreateUniversal (espnowRxTask_cb, "receive_handle", 4 * 1024, NULL, 1, &espnowRxTask, CONFIG_ARDUINO_RUNNING_CORE);
 
 #ifdef MEAS_TPUT
@@ -357,7 +372,7 @@ void QuickEspNow::rx_cb (uint8_t* mac_addr, uint8_t* data, uint8_t len) {
     message.rssi = rx_ctrl->rssi;
     memcpy (message.dstAddress, espnow_data->destination_address, ESP_NOW_ETH_ALEN);
 
-    if (uxQueueMessagesWaiting (quickEspNow.rx_queue) >= ESPNOW_QUEUE_SIZE) {
+    if (uxQueueMessagesWaiting (quickEspNow.rx_queue) >= quickEspNow.queueSize) {
         comms_rx_queue_item_t tempBuffer;
         xQueueReceive (quickEspNow.rx_queue, &tempBuffer, 0);
         DEBUG_DBG (QESPNOW_TAG, "Rx Message dropped");
@@ -373,6 +388,8 @@ void QuickEspNow::rx_cb (uint8_t* mac_addr, uint8_t* data, uint8_t len) {
 
 void QuickEspNow::tx_cb (uint8_t* mac_addr, uint8_t status) {
     quickEspNow.readyToSend = true;
+    quickEspNow.sentStatus = status;
+    quickEspNow.waitingForConfirmation = false;
     DEBUG_DBG (QESPNOW_TAG, "-------------- Ready to send: true. Status: %d", status);
     if (quickEspNow.sentResult) {
         quickEspNow.sentResult (mac_addr, status);
@@ -384,7 +401,7 @@ uint8_t PeerListClass::get_peer_number () {
 }
 
 bool PeerListClass::peer_exists (const uint8_t* mac) {
-    for (uint8_t i = 0; i < ESP_NOW_MAX_TOTAL_PEER_NUM; i++) {
+    for (int i = 0; i < ESP_NOW_MAX_TOTAL_PEER_NUM; i++) {
         if (memcmp (peer_list.peer[i].mac, mac, ESP_NOW_ETH_ALEN) == 0) {
             if (peer_list.peer[i].active) {
                 peer_list.peer[i].last_msg = millis ();
@@ -397,7 +414,7 @@ bool PeerListClass::peer_exists (const uint8_t* mac) {
 }
 
 peer_t* PeerListClass::get_peer (const uint8_t* mac) {
-    for (uint8_t i = 0; i < ESP_NOW_MAX_TOTAL_PEER_NUM; i++) {
+    for (int i = 0; i < ESP_NOW_MAX_TOTAL_PEER_NUM; i++) {
         if (memcmp (peer_list.peer[i].mac, mac, ESP_NOW_ETH_ALEN) == 0) {
             if (peer_list.peer[i].active) {
                 DEBUG_VERBOSE (PEERLIST_TAG, "Peer " MACSTR " found", MAC2STR (mac));
@@ -418,7 +435,7 @@ bool PeerListClass::update_peer_use (const uint8_t* mac) {
 }
 
 bool PeerListClass::add_peer (const uint8_t* mac) {
-    if (int i = peer_exists (mac)) {
+    if (peer_exists (mac)) {
         DEBUG_VERBOSE (PEERLIST_TAG, "Peer " MACSTR " already exists", MAC2STR (mac));
         return false;
     }
@@ -431,7 +448,7 @@ bool PeerListClass::add_peer (const uint8_t* mac) {
         // delete_peer (); // Delete should happen in higher level
     }
 
-    for (uint8_t i = 0; i < ESP_NOW_MAX_TOTAL_PEER_NUM; i++) {
+    for (int i = 0; i < ESP_NOW_MAX_TOTAL_PEER_NUM; i++) {
         if (!peer_list.peer[i].active) {
             memcpy (peer_list.peer[i].mac, mac, ESP_NOW_ETH_ALEN);
             peer_list.peer[i].active = true;
