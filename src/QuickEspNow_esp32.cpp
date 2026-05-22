@@ -57,6 +57,18 @@ void QuickEspNow::stop () {
     esp_now_unregister_recv_cb ();
     esp_now_unregister_send_cb ();
     esp_now_deinit ();
+    // Release the FreeRTOS queues created in initComms(). Without this a
+    // stop()/begin() cycle leaks both queues, since begin() unconditionally
+    // creates fresh ones. The tasks that use these queues were just deleted
+    // above, so nothing can be reading or writing them here.
+    if (tx_queue) {
+        vQueueDelete (tx_queue);
+        tx_queue = nullptr;
+    }
+    if (rx_queue) {
+        vQueueDelete (rx_queue);
+        rx_queue = nullptr;
+    }
 }
 
 bool QuickEspNow::readyToSendData () {
